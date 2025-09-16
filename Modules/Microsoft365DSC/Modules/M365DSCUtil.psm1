@@ -3359,6 +3359,15 @@ function Update-M365DSCDependencies
         $InformationPreference = 'Continue'
         $i = 1
 
+        $modulePSResourceGet = [bool](Get-Module -ListAvailable -Name Microsoft.PowerShell.PSResourceGet)
+        if ($modulePSResourceGet) {
+            Write-Verbose -Message "Using PSResourceGet for installing modules"
+            if ($null -eq (Get-PSResourceRepository -Name "PSGallery" -ErrorAction SilentlyContinue)){
+                Register-PSResourceRepository -PSGallery
+            }
+            Set-PSResourceRepository -Name PSGallery -Trusted
+        } 
+
         $returnValue = @()
 
         $params = @{}
@@ -3384,7 +3393,13 @@ function Update-M365DSCDependencies
                         Write-Verbose -Message "The dependency {$($dependency.ModuleName)} requires Windows PowerShell. Skipping."
                         continue
                     }
-                    $found = Get-Module $dependency.ModuleName -ListAvailable | Where-Object -FilterScript { $_.Version -eq $dependency.RequiredVersion }
+
+                    if ($modulePSResourceGet) {
+                        $found = Get-InstalledPSResource -Name $dependency.ModuleName -ErrorAction SilentlyContinue | Where-Object -FilterScript { $_.Version -eq $dependency.RequiredVersion }
+                    } else {
+                        $found = Get-Module $dependency.ModuleName -ListAvailable | Where-Object -FilterScript { $_.Version -eq $dependency.RequiredVersion }
+                    }
+                    
                 }
 
                 if ((-not $found -or $Force) -and -not $ValidateOnly)
@@ -3416,19 +3431,33 @@ function Update-M365DSCDependencies
                         }
 
                         Write-Information -MessageData "Installing $($dependency.ModuleName) version {$($dependency.RequiredVersion)}"
-                        Remove-Module $dependency.ModuleName -Force -ErrorAction SilentlyContinue
-                        if ($dependency.ModuleName -like 'Microsoft.Graph*')
-                        {
-                            Remove-Module 'Microsoft.Graph.Authentication' -Force -ErrorAction SilentlyContinue
+                        if ($modulePSResourceGet) {
+                            Uninstall-PSResource -Name $dependency.ModuleName -ErrorAction SilentlyContinue
+                            if ($dependency.ModuleName -like 'Microsoft.Graph*')
+                            {
+                                Uninstall-PSResource -Name 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue
+                            }
+                            Uninstall-PSResource -Name $dependency.ModuleName -ErrorAction SilentlyContinue
+                            Install-PSResource -Name $dependency.ModuleName -Version $dependency.RequiredVersion -Scope "$Scope" @Params -Reinstall
+                        } else {
+                            Remove-Module $dependency.ModuleName -Force -ErrorAction SilentlyContinue
+                            if ($dependency.ModuleName -like 'Microsoft.Graph*')
+                            {
+                                Remove-Module 'Microsoft.Graph.Authentication' -Force -ErrorAction SilentlyContinue
+                            }
+                            Remove-Module $dependency.ModuleName -Force -ErrorAction SilentlyContinue
+                            Install-Module $dependency.ModuleName -RequiredVersion $dependency.RequiredVersion -AllowClobber -Force -Scope "$Scope" @Params
                         }
-                        Remove-Module $dependency.ModuleName -Force -ErrorAction SilentlyContinue
-                        Install-Module $dependency.ModuleName -RequiredVersion $dependency.RequiredVersion -AllowClobber -Force -Scope "$Scope" @Params
                     }
                 }
 
                 if ($dependency.ExplicitLoading)
                 {
-                    Remove-Module $dependency.ModuleName -Force -ErrorAction SilentlyContinue
+                    if ($modulePSResourceGet) {
+                         Uninstall-PSResource -Name $dependency.ModuleName -ErrorAction SilentlyContinue
+                    } else {
+                        Remove-Module $dependency.ModuleName -Force -ErrorAction SilentlyContinue
+                    }
                     if ($dependency.Prefix)
                     {
                         Import-Module $dependency.ModuleName -Global -Prefix $dependency.Prefix -Force
